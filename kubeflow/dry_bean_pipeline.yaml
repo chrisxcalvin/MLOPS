@@ -1,0 +1,422 @@
+# PIPELINE DEFINITION
+# Name: dry-bean-mlops
+# Description: Collect -> Validate -> Train -> Evaluate -> (gate) Deploy
+# Inputs:
+#    data_url: str
+#    dvc_rev: str [Default: 'data-v2']
+#    project: str [Default: 'my-gcp-project']
+#    region: str [Default: 'us-central1']
+components:
+  comp-condition-1:
+    dag:
+      tasks:
+        deploy:
+          cachingOptions:
+            enableCache: true
+          componentRef:
+            name: comp-deploy
+          inputs:
+            artifacts:
+              model:
+                componentInputArtifact: pipelinechannel--train-model
+            parameters:
+              project:
+                componentInputParameter: pipelinechannel--project
+              region:
+                componentInputParameter: pipelinechannel--region
+          taskInfo:
+            name: deploy
+    inputDefinitions:
+      artifacts:
+        pipelinechannel--train-model:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+      parameters:
+        pipelinechannel--evaluate-Output:
+          parameterType: BOOLEAN
+        pipelinechannel--project:
+          parameterType: STRING
+        pipelinechannel--region:
+          parameterType: STRING
+  comp-data-collection:
+    executorLabel: exec-data-collection
+    inputDefinitions:
+      parameters:
+        data_url:
+          parameterType: STRING
+        dvc_rev:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        dataset:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+  comp-data-validation:
+    executorLabel: exec-data-validation
+    inputDefinitions:
+      artifacts:
+        dataset:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        validated:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        Output:
+          parameterType: BOOLEAN
+  comp-deploy:
+    executorLabel: exec-deploy
+    inputDefinitions:
+      artifacts:
+        model:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+      parameters:
+        project:
+          parameterType: STRING
+        region:
+          parameterType: STRING
+  comp-evaluate:
+    executorLabel: exec-evaluate
+    inputDefinitions:
+      artifacts:
+        model:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+        test_set:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        threshold:
+          defaultValue: 0.9
+          isOptional: true
+          parameterType: NUMBER_DOUBLE
+    outputDefinitions:
+      artifacts:
+        metrics:
+          artifactType:
+            schemaTitle: system.Metrics
+            schemaVersion: 0.0.1
+      parameters:
+        Output:
+          parameterType: BOOLEAN
+  comp-train:
+    executorLabel: exec-train
+    inputDefinitions:
+      artifacts:
+        validated:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        C:
+          defaultValue: 10.0
+          isOptional: true
+          parameterType: NUMBER_DOUBLE
+    outputDefinitions:
+      artifacts:
+        model:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+        test_set:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+deploymentSpec:
+  executors:
+    exec-data-collection:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - data_collection
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas' 'scikit-learn'\
+          \ 'mlflow' 'joblib'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.17.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef data_collection(dvc_rev: str, data_url: str, dataset: dsl.Output[dsl.Dataset]):\n\
+          \    import pandas as pd\n    # in a real cluster: `dvc get <repo> data/dry_bean.csv\
+          \ --rev <dvc_rev>`; here we read from the URL/remote path\n    pd.read_csv(data_url).to_csv(dataset.path,\
+          \ index=False)\n\n"
+        image: python:3.11-slim
+    exec-data-validation:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - data_validation
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas' 'scikit-learn'\
+          \ 'mlflow' 'joblib'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.17.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef data_validation(dataset: dsl.Input[dsl.Dataset], validated: dsl.Output[dsl.Dataset])\
+          \ -> bool:\n    import pandas as pd\n    df = pd.read_csv(dataset.path)\n\
+          \    assert df.isna().sum().sum() == 0, \"missing values found\"\n    assert\
+          \ \"Class\" in df.columns and df.Class.nunique() == 7, \"unexpected label\
+          \ set\"\n    assert len(df) > 10000, \"too few rows\"\n    df.to_csv(validated.path,\
+          \ index=False)\n    return True\n\n"
+        image: python:3.11-slim
+    exec-deploy:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - deploy
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas' 'scikit-learn'\
+          \ 'mlflow' 'joblib' 'google-cloud-aiplatform'  &&  python3 -m pip install\
+          \ --quiet --no-warn-script-location 'kfp==2.17.0' '--no-deps' 'typing-extensions>=3.7.4,<5;\
+          \ python_version<\"3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef deploy(model: dsl.Input[dsl.Model], project: str, region: str):\n\
+          \    from google.cloud import aiplatform\n    aiplatform.init(project=project,\
+          \ location=region)\n    # upload the artifact and expose it behind a managed\
+          \ endpoint (see cloud/deploy_vertex.py)\n    m = aiplatform.Model.upload(display_name=\"\
+          dry-bean-svm\", artifact_uri=model.uri,\n        serving_container_image_uri=\"\
+          us-docker.pkg.dev/vertex-ai/prediction/sklearn-cpu.1-5:latest\")\n    m.deploy(machine_type=\"\
+          n1-standard-2\", min_replica_count=1, max_replica_count=3)\n\n"
+        image: python:3.11-slim
+    exec-evaluate:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - evaluate
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas' 'scikit-learn'\
+          \ 'mlflow' 'joblib'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.17.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef evaluate(model: dsl.Input[dsl.Model], test_set: dsl.Input[dsl.Dataset],\
+          \ metrics: dsl.Output[dsl.Metrics], threshold: float = 0.90) -> bool:\n\
+          \    import pandas as pd, joblib\n    from sklearn.metrics import accuracy_score,\
+          \ f1_score\n    df = pd.read_csv(test_set.path); m = joblib.load(model.path)\n\
+          \    pred = m.predict(df.drop(columns=\"Class\"))\n    acc, f1 = accuracy_score(df.Class,\
+          \ pred), f1_score(df.Class, pred, average=\"weighted\")\n    metrics.log_metric(\"\
+          accuracy\", acc); metrics.log_metric(\"f1_weighted\", f1)\n    return acc\
+          \ >= threshold\n\n"
+        image: python:3.11-slim
+    exec-train:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - train
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas' 'scikit-learn'\
+          \ 'mlflow' 'joblib'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.17.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef train(validated: dsl.Input[dsl.Dataset], model: dsl.Output[dsl.Model],\
+          \ test_set: dsl.Output[dsl.Dataset], C: float = 10.0):\n    import pandas\
+          \ as pd, joblib\n    from sklearn.model_selection import train_test_split\n\
+          \    from sklearn.pipeline import make_pipeline\n    from sklearn.preprocessing\
+          \ import StandardScaler\n    from sklearn.svm import SVC\n    df = pd.read_csv(validated.path)\n\
+          \    Xtr, Xte, ytr, yte = train_test_split(df.drop(columns=\"Class\"), df.Class,\
+          \ test_size=.2, stratify=df.Class, random_state=42)\n    joblib.dump(make_pipeline(StandardScaler(),\
+          \ SVC(C=C)).fit(Xtr, ytr), model.path)\n    pd.concat([Xte, yte], axis=1).to_csv(test_set.path,\
+          \ index=False)\n\n"
+        image: python:3.11-slim
+pipelineInfo:
+  description: Collect -> Validate -> Train -> Evaluate -> (gate) Deploy
+  name: dry-bean-mlops
+root:
+  dag:
+    tasks:
+      condition-1:
+        componentRef:
+          name: comp-condition-1
+        dependentTasks:
+        - evaluate
+        - train
+        inputs:
+          artifacts:
+            pipelinechannel--train-model:
+              taskOutputArtifact:
+                outputArtifactKey: model
+                producerTask: train
+          parameters:
+            pipelinechannel--evaluate-Output:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: evaluate
+            pipelinechannel--project:
+              componentInputParameter: project
+            pipelinechannel--region:
+              componentInputParameter: region
+        taskInfo:
+          name: condition-1
+        triggerPolicy:
+          condition: inputs.parameter_values['pipelinechannel--evaluate-Output'] ==
+            true
+      data-collection:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-data-collection
+        inputs:
+          parameters:
+            data_url:
+              componentInputParameter: data_url
+            dvc_rev:
+              componentInputParameter: dvc_rev
+        taskInfo:
+          name: data-collection
+      data-validation:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-data-validation
+        dependentTasks:
+        - data-collection
+        inputs:
+          artifacts:
+            dataset:
+              taskOutputArtifact:
+                outputArtifactKey: dataset
+                producerTask: data-collection
+        taskInfo:
+          name: data-validation
+      evaluate:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-evaluate
+        dependentTasks:
+        - train
+        inputs:
+          artifacts:
+            model:
+              taskOutputArtifact:
+                outputArtifactKey: model
+                producerTask: train
+            test_set:
+              taskOutputArtifact:
+                outputArtifactKey: test_set
+                producerTask: train
+        taskInfo:
+          name: evaluate
+      train:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-train
+        dependentTasks:
+        - data-validation
+        inputs:
+          artifacts:
+            validated:
+              taskOutputArtifact:
+                outputArtifactKey: validated
+                producerTask: data-validation
+        taskInfo:
+          name: train
+  inputDefinitions:
+    parameters:
+      data_url:
+        parameterType: STRING
+      dvc_rev:
+        defaultValue: data-v2
+        isOptional: true
+        parameterType: STRING
+      project:
+        defaultValue: my-gcp-project
+        isOptional: true
+        parameterType: STRING
+      region:
+        defaultValue: us-central1
+        isOptional: true
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.17.0

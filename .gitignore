@@ -3,3 +3,4 @@ mlflow.db
 __pycache__/
 raw/
 *.pyc
+versions/
